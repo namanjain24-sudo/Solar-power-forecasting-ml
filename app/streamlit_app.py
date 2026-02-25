@@ -1,8 +1,22 @@
+"""
+Streamlit Dashboard for the Solar Power Forecasting project.
+
+Provides interactive tabs for:
+  - Single & batch prediction
+  - Exploratory data analysis
+  - Model evaluation & explainability
+  - Future hourly forecasting
+  - Training logs & data export
+
+Run:
+  streamlit run app/streamlit_app.py
+"""
+
 import sys
 import os
 import json
 
-# Fix import paths
+# Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
@@ -12,7 +26,10 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from ml.preprocessing import encode_features
+
+from src.preprocessing.preprocessing import encode_features, FEATURES, TARGET
+from src.evaluation.metrics import compute_mape
+from src.utils.helpers import style_plot, concept_note, C_RF, C_ACTUAL, C_ACCENT, C_GOLD
 
 # ══════════════════════════════════════
 # PAGE CONFIG & STYLING
@@ -141,15 +158,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ══════════════════════════════════════
 # LOAD MODEL + DATASET
 # ══════════════════════════════════════
-FEATURES = [
-    "SOURCE_KEY", "AMBIENT_TEMPERATURE", "MODULE_TEMPERATURE",
-    "IRRADIATION", "hour", "month",
-]
-
-
 @st.cache_resource
 def load_model():
     return joblib.load("models/solar_model.pkl")
@@ -162,10 +174,10 @@ def load_dataset():
 
 @st.cache_data
 def load_training_log():
-    log_path = "models/training_log.json"
-    if os.path.exists(log_path):
-        with open(log_path) as f:
-            return json.load(f)
+    for path in ["training_log.json", "models/training_log.json"]:
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f)
     return None
 
 
@@ -174,6 +186,7 @@ df_full = load_dataset()
 df_train = encode_features(df_full.copy())
 training_log = load_training_log()
 
+
 # ══════════════════════════════════════
 # TIME-BASED TRAIN-TEST SPLIT
 # ══════════════════════════════════════
@@ -181,51 +194,12 @@ df_sorted = df_train.sort_values("DATE_TIME")
 split_idx = int(len(df_sorted) * 0.8)
 
 X_all = df_sorted[FEATURES]
-y_all = df_sorted["DC_POWER"]
+y_all = df_sorted[TARGET]
 
 X_train_ts = X_all.iloc[:split_idx]
 X_test_ts = X_all.iloc[split_idx:]
 y_train_ts = y_all.iloc[:split_idx]
 y_test_ts = y_all.iloc[split_idx:]
-
-
-# ══════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════
-def compute_mape(y_true, y_pred, threshold=10):
-    """MAPE excluding near-zero actuals."""
-    y_true = np.array(y_true, dtype=float)
-    y_pred = np.array(y_pred, dtype=float)
-    mask = np.abs(y_true) > threshold
-    if mask.sum() == 0:
-        return float("nan")
-    return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
-
-
-def style_plot(ax, title, xlabel="", ylabel=""):
-    """Consistent dark-themed plot styling."""
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=14, color="#E5E7EB")
-    ax.set_xlabel(xlabel, fontsize=10, color="#9CA3AF")
-    ax.set_ylabel(ylabel, fontsize=10, color="#9CA3AF")
-    ax.grid(alpha=0.12, linestyle="--", color="#4B5563")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["bottom"].set_color("#374151")
-    ax.spines["left"].set_color("#374151")
-    ax.tick_params(colors="#9CA3AF")
-    ax.set_facecolor("#111827")
-
-
-def concept_note(text):
-    """Render an academic concept note."""
-    st.markdown(f'<div class="concept-box">{text}</div>', unsafe_allow_html=True)
-
-
-# Colors
-C_RF = "#43A047"
-C_ACTUAL = "#FFA726"
-C_ACCENT = "#7E57C2"
-C_GOLD = "#FFD54F"
 
 
 # ══════════════════════════════════════
@@ -273,7 +247,6 @@ with tab1:
 
         st.metric("Predicted DC Power (RandomForest)", f"{pred:,.0f} W")
 
-        # Bar chart
         fig, ax = plt.subplots(figsize=(5, 3.5))
         fig.patch.set_facecolor("#0D1117")
         bar = ax.bar(["RandomForest"], [pred], color=[C_RF], alpha=0.9,
@@ -348,14 +321,12 @@ with tab2:
         "These preprocessing steps are essential for building reliable regression models."
     )
 
-    # KPI dashboard
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Avg Power", f"{int(df_train['DC_POWER'].mean()):,} W")
     col2.metric("Peak Power", f"{int(df_train['DC_POWER'].max()):,} W")
     col3.metric("Std Deviation", f"{int(df_train['DC_POWER'].std()):,} W")
     col4.metric("Data Points", f"{len(df_train):,}")
 
-    # ── Seasonal trends ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Seasonal Solar Trends")
 
@@ -371,7 +342,6 @@ with tab2:
         "physical system to create informative features that improve model performance."
     )
 
-    # ── Daily curve ──
     st.subheader("Average Daily Solar Curve")
 
     hourly = df_train.groupby("hour")["DC_POWER"].mean()
@@ -390,7 +360,6 @@ with tab2:
     st.info("Solar generation follows a bell curve aligned with sun elevation angle. "
             "Peak output occurs around noon — a nonlinear pattern that decision trees capture well.")
 
-    # ── Variability ──
     st.subheader("Output Variability by Hour")
 
     variability = df_train.groupby("hour")["DC_POWER"].std()
@@ -431,16 +400,13 @@ with tab3:
         "Using multiple metrics provides a comprehensive evaluation."
     )
 
-    # ── Predictions ──
     preds = np.clip(model.predict(X_test_ts), 0, None)
 
-    # ── Metrics ──
     mae = mean_absolute_error(y_test_ts, preds)
     rmse = np.sqrt(mean_squared_error(y_test_ts, preds))
     r2 = r2_score(y_test_ts, preds)
     mape = compute_mape(y_test_ts, preds)
 
-    # ── Metrics dashboard ──
     st.subheader("RandomForest — Holdout Evaluation")
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -449,7 +415,6 @@ with tab3:
     col_m3.metric("R² Score", f"{r2:.4f}")
     col_m4.metric("MAPE", f"{mape:.1f}%")
 
-    # ── Metrics bar chart ──
     fig_met, axes = plt.subplots(1, 3, figsize=(12, 3.5))
     fig_met.patch.set_facecolor("#0D1117")
     labels = ["MAE", "RMSE", "R²"]
@@ -472,7 +437,6 @@ with tab3:
     plt.tight_layout()
     st.pyplot(fig_met)
 
-    # ── CV results ──
     if training_log and "cv_metrics_k5" in training_log:
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         st.subheader("Cross-Validation (TimeSeriesSplit, k=5)")
@@ -491,7 +455,6 @@ with tab3:
         col_cv3.metric("CV R²", f"{cv['R2_mean']:.4f} ± {cv['R2_std']:.4f}")
         col_cv4.metric("CV MAPE", f"{cv['MAPE_mean']:.1f} ± {cv['MAPE_std']:.1f}%")
 
-    # ── Actual vs Predicted ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Actual vs Predicted")
 
@@ -517,7 +480,6 @@ with tab3:
         "transitional hours."
     )
 
-    # ── Scatter Plot ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Scatter Plot — Actual vs Predicted")
 
@@ -535,7 +497,6 @@ with tab3:
     st.caption("Points on the diagonal = perfect predictions. "
                "Tighter cluster = better model performance.")
 
-    # ── Residual Analysis ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Residual Analysis")
 
@@ -544,12 +505,10 @@ with tab3:
     fig_res, (ax_r1, ax_r2) = plt.subplots(1, 2, figsize=(14, 4.5))
     fig_res.patch.set_facecolor("#0D1117")
 
-    # Residuals vs predicted
     ax_r1.scatter(preds, errors, alpha=0.12, s=8, color=C_RF, edgecolors="none")
     ax_r1.axhline(0, color=C_ACTUAL, linestyle="--", linewidth=1.5, alpha=0.7)
     style_plot(ax_r1, "Residuals vs Predicted", xlabel="Predicted (W)", ylabel="Residual (W)")
 
-    # Error histogram
     ax_r2.hist(errors, bins=60, color=C_RF, alpha=0.75, edgecolor="white", linewidth=0.5)
     ax_r2.axvline(0, color=C_ACTUAL, linestyle="--", linewidth=1.5, alpha=0.7)
     ax_r2.axvline(np.mean(errors), color="#E5E7EB", linestyle=":", linewidth=1, alpha=0.5,
@@ -567,7 +526,6 @@ with tab3:
         "systematic errors the model has not captured."
     )
 
-    # ── Feature Importance ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Feature Importance — What Drives Predictions?")
 
@@ -631,7 +589,6 @@ with tab4:
             future_hour = (fc_hour + h) % 24
             hours_list.append(future_hour)
 
-            # Solar bell curve simulation
             if 6 <= future_hour <= 18:
                 solar_factor = np.sin(np.pi * (future_hour - 6) / 12)
             else:
@@ -656,7 +613,6 @@ with tab4:
 
             preds_list.append(p)
 
-        # ── Forecast plot ──
         st.subheader("Forecast Curve")
 
         fig_fc, ax_fc = plt.subplots(figsize=(14, 5))
@@ -673,7 +629,6 @@ with tab4:
         plt.tight_layout()
         st.pyplot(fig_fc)
 
-        # ── Key metrics ──
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         col_i1, col_i2 = st.columns(2)
         col_i1.metric("Peak Forecast", f"{max(preds_list):,.0f} W")
@@ -685,7 +640,6 @@ with tab4:
         )[:3]
         st.success(f"Peak generation hours: {[h[0] for h in best_hours]}")
 
-        # ── Export ──
         forecast_df = pd.DataFrame({
             "Hour": hours_list,
             "Forecast_W": [round(p, 2) for p in preds_list],
@@ -701,7 +655,6 @@ with tab4:
 with tab5:
     st.header("Training Logs & Data Export")
 
-    # ── Training Log ──
     if training_log:
         st.subheader("Training Log")
 
@@ -732,29 +685,26 @@ with tab5:
         st.download_button("Download Training Log (JSON)", log_json,
                            "training_log.json", "application/json")
     else:
-        st.warning("No training log found. Run `python -m ml.train` to generate it.")
+        st.warning("No training log found. Run `python -m src.modeling.train` to generate it.")
 
-    # ── Export test results ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Export Test Set Results")
 
     preds_export = np.clip(model.predict(X_test_ts), 0, None)
 
-    export_df = pd.DataFrame({
-        "Actual_DC_POWER": y_test_ts.values,
-        "Predicted": preds_export,
-        "Error": y_test_ts.values - preds_export,
-        "Abs_Error": np.abs(y_test_ts.values - preds_export),
-    })
+    export_df = X_test_ts.copy()
+    export_df["Actual_DC_POWER"] = y_test_ts.values
+    export_df["Predicted"] = preds_export
+    export_df["Error"] = y_test_ts.values - preds_export
+    export_df["Abs_Error"] = np.abs(y_test_ts.values - preds_export)
 
-    st.write(f"Test set size: **{len(export_df):,}** samples")
+    st.write(f"Test set size: **{len(export_df):,}** samples. Features are now included so this file can be reused in the Batch Prediction tool!")
     st.dataframe(export_df.head(20), width="stretch")
 
     csv_export = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("Download Test Results (CSV)", csv_export,
-                       "test_set_results.csv", "text/csv")
+                       "test_features_and_predictions.csv", "text/csv")
 
-    # ── Summary statistics ──
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.subheader("Summary Statistics")
 

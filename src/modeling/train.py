@@ -1,5 +1,18 @@
+"""
+Model training pipeline for the Solar Power Forecasting project.
+
+Pipeline:
+  1. Load and preprocess data
+  2. Train RandomForest Regressor
+  3. Evaluate on holdout set (MAE, RMSE, R², MAPE)
+  4. Run TimeSeriesSplit cross-validation (k=5)
+  5. Save model, metrics log, and plots
+
+Usage:
+  python -m src.modeling.train
+"""
+
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 import joblib
 import numpy as np
@@ -8,67 +21,40 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
 
-from .preprocessing import encode_features, split_data
-from .load_data import load_data
-
-
-def compute_mape(y_true, y_pred, threshold=10):
-    """Compute MAPE, excluding near-zero actuals to avoid inf."""
-    y_true = np.array(y_true, dtype=float)
-    y_pred = np.array(y_pred, dtype=float)
-    mask = np.abs(y_true) > threshold
-    if mask.sum() == 0:
-        return float("nan")
-    return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+from src.data.load_data import load_data
+from src.preprocessing.preprocessing import encode_features, split_data, FEATURES
+from src.evaluation.metrics import evaluate_model, compute_mape, print_metrics
 
 
 def train_model():
-    print("Loading data...")
+    """Full training pipeline: load → preprocess → train → evaluate → save."""
 
-    # Load + preprocess
+    print("Loading data...")
     df = load_data()
     df = encode_features(df)
 
     X_train, X_test, y_train, y_test = split_data(df)
 
-    print("Training RandomForest...")
+    # ── Train RandomForest ──
+    print("\nTraining RandomForest...")
 
     model = RandomForestRegressor(
         n_estimators=100,
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1,
     )
 
     model.fit(X_train, y_train)
-
     print("Model trained successfully.")
 
-    # Predictions (clipped to >= 0)
+    # ── Holdout evaluation ──
     preds = np.clip(model.predict(X_test), 0, None)
+    holdout_metrics = evaluate_model(y_test, preds)
+    print_metrics(holdout_metrics, "Holdout Evaluation (80/20 Time-Series Split)")
 
-    # ══════════════════════════════════════
-    # EVALUATION (MAE, RMSE, R², MAPE)
-    # ══════════════════════════════════════
-    mae = mean_absolute_error(y_test, preds)
-    rmse = np.sqrt(mean_squared_error(y_test, preds))
-    r2 = r2_score(y_test, preds)
-    mape = compute_mape(y_test, preds)
-
-    print(f"\n{'='*45}")
-    print(f"  Holdout Evaluation (80/20 Time-Series Split)")
-    print(f"{'='*45}")
-    print(f"  MAE  = {mae:,.2f} W")
-    print(f"  RMSE = {rmse:,.2f} W")
-    print(f"  R²   = {r2:.4f}")
-    print(f"  MAPE = {mape:.2f} %")
-    print(f"{'='*45}")
-
-    # ══════════════════════════════════════
-    # TIMESERIES CROSS-VALIDATION (k=5)
-    # ══════════════════════════════════════
+    # ── TimeSeriesSplit cross-validation (k=5) ──
     print("\nRunning TimeSeriesSplit Cross-Validation (k=5)...")
 
-    # Use full sorted data for CV
     df_sorted = df.sort_values("DATE_TIME")
     features = list(X_train.columns)
     X_full = df_sorted[features]
@@ -89,18 +75,16 @@ def train_model():
         cv_model.fit(X_cv_train, y_cv_train)
         cv_preds = np.clip(cv_model.predict(X_cv_val), 0, None)
 
-        fold_mae = mean_absolute_error(y_cv_val, cv_preds)
-        fold_rmse = np.sqrt(mean_squared_error(y_cv_val, cv_preds))
-        fold_r2 = r2_score(y_cv_val, cv_preds)
-        fold_mape = compute_mape(y_cv_val, cv_preds)
+        fold_metrics = evaluate_model(y_cv_val, cv_preds)
+        cv_mae.append(fold_metrics["MAE"])
+        cv_rmse.append(fold_metrics["RMSE"])
+        cv_r2.append(fold_metrics["R2"])
+        cv_mape.append(fold_metrics["MAPE"])
 
-        cv_mae.append(fold_mae)
-        cv_rmse.append(fold_rmse)
-        cv_r2.append(fold_r2)
-        cv_mape.append(fold_mape)
-
-        print(f"  Fold {fold}: MAE={fold_mae:,.1f}  RMSE={fold_rmse:,.1f}  "
-              f"R²={fold_r2:.4f}  MAPE={fold_mape:.1f}%")
+        print(f"  Fold {fold}: MAE={fold_metrics['MAE']:,.1f}  "
+              f"RMSE={fold_metrics['RMSE']:,.1f}  "
+              f"R²={fold_metrics['R2']:.4f}  "
+              f"MAPE={fold_metrics['MAPE']:.1f}%")
 
     print(f"\n{'='*45}")
     print(f"  CV Average (k=5)")
@@ -111,15 +95,11 @@ def train_model():
     print(f"  MAPE = {np.nanmean(cv_mape):.2f} ± {np.nanstd(cv_mape):.2f} %")
     print(f"{'='*45}")
 
-    # ══════════════════════════════════════
-    # SAVE MODEL
-    # ══════════════════════════════════════
+    # ── Save model ──
     joblib.dump(model, "models/solar_model.pkl")
     print("\nModel saved -> models/solar_model.pkl")
 
-    # ══════════════════════════════════════
-    # LOG HYPERPARAMETERS & METRICS -> JSON
-    # ══════════════════════════════════════
+    # ── Save training log ──
     log_data = {
         "timestamp": datetime.now().isoformat(),
         "model": "RandomForestRegressor",
@@ -136,12 +116,7 @@ def train_model():
             "test_rows": len(X_test),
             "date_range": f"{df['DATE_TIME'].min()} -> {df['DATE_TIME'].max()}",
         },
-        "holdout_metrics": {
-            "MAE": round(mae, 2),
-            "RMSE": round(rmse, 2),
-            "R2": round(r2, 4),
-            "MAPE": round(mape, 2),
-        },
+        "holdout_metrics": holdout_metrics,
         "cv_metrics_k5": {
             "MAE_mean": round(np.mean(cv_mae), 2),
             "MAE_std": round(np.std(cv_mae), 2),
@@ -154,20 +129,17 @@ def train_model():
         },
     }
 
-    with open("models/training_log.json", "w") as f:
+    with open("training_log.json", "w") as f:
         json.dump(log_data, f, indent=2)
-    print("Training log saved -> models/training_log.json")
+    print("Training log saved -> training_log.json")
 
-    # ══════════════════════════════════════
-    # FEATURE IMPORTANCE
-    # ══════════════════════════════════════
-    print("\nCalculating feature importance...")
+    # ── Feature importance plot ──
+    print("\nGenerating plots...")
 
     importance = model.feature_importances_
-
     imp_df = pd.DataFrame({
         "Feature": features,
-        "Importance": importance
+        "Importance": importance,
     }).sort_values("Importance", ascending=False)
 
     print("\nFeature Importance:\n", imp_df)
@@ -180,12 +152,10 @@ def train_model():
     plt.title("Feature Importance — RandomForest", fontsize=13, fontweight="bold")
     plt.xlabel("Importance Score")
     plt.tight_layout()
-    plt.savefig("models/feature_importance.png", dpi=150)
-    print("Feature importance plot saved")
+    plt.savefig("reports/feature_importance.png", dpi=150)
+    print("Feature importance plot saved -> reports/feature_importance.png")
 
-    # ══════════════════════════════════════
-    # PREDICTION vs ACTUAL
-    # ══════════════════════════════════════
+    # ── Prediction vs actual plot ──
     plt.figure(figsize=(12, 5))
     plt.plot(y_test.values[:300], label="Actual", color="#FFA726",
              linewidth=1.5, alpha=0.8)
@@ -197,8 +167,8 @@ def train_model():
     plt.ylabel("DC Power (W)")
     plt.grid(alpha=0.2)
     plt.tight_layout()
-    plt.savefig("models/prediction_vs_actual.png", dpi=150)
-    print("Prediction vs Actual plot saved")
+    plt.savefig("reports/prediction_vs_actual.png", dpi=150)
+    print("Prediction vs Actual plot saved -> reports/prediction_vs_actual.png")
 
     print("\nTraining complete!")
 
