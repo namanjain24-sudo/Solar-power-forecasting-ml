@@ -1,14 +1,3 @@
----
-title: Solar Power Forecasting & AI Grid Optimization
-emoji: ☀️
-colorFrom: blue
-colorTo: green
-sdk: streamlit
-sdk_version: "1.32.0"
-app_file: app.py
-pinned: false
----
-
 # Intelligent Solar Energy Forecasting and Agentic Grid Optimization
 
 This project is a heavily integrated, enterprise-scale, two-milestone renewable energy decision support system:
